@@ -1,0 +1,8 @@
+{
+  "mcp": {
+    "harmonyos-knowledge": {
+      "type": "remote",
+      "url": "https://8.152.217.126/mcp"
+    }
+  }
+}

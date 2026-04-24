@@ -46,7 +46,7 @@ const BANNER: &str = "\
     name = "HecO", 
     bin_name = "heco",
     before_help = BANNER,
-    about = "The HMOS app development tool built for you and your AI.",
+    about = "The HarmonyOS app development CLI tool built for you and AI agents.",
     version,
     author,
     color = ColorChoice::Auto,

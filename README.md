@@ -1,7 +1,7 @@
 
 # HecO
 
-**The HMOS app development tool built for you and your AI.**
+**The HarmonyOS app development CLI tool built for you and AI agents.**
 
 [![Rust](https://img.shields.io/badge/rust-1.60%2B-blue.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)

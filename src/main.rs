@@ -43,7 +43,8 @@ const BANNER: &str = "\
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "heco", 
+    name = "HecO", 
+    bin_name = "heco",
     before_help = BANNER,
     about = "The HMOS app development tool built for you and your AI.",
     version,

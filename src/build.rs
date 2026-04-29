@@ -1,7 +1,8 @@
 use crate::adapters::hvigor;
 use crate::config::Config;
+use crate::progress::StatusBar;
 use crate::project::find_project_root;
-use anstream::{eprintln, println};
+use anstream::eprintln;
 use clap::Parser;
 use clap_complete::engine::ArgValueCompleter;
 use owo_colors::OwoColorize;
@@ -9,9 +10,9 @@ use std::time::Instant;
 
 #[derive(Parser, Debug)]
 pub struct BuildArgs {
-    /// Module name (format: module or module@target)
-    #[arg(short, long, add = ArgValueCompleter::new(crate::completion::complete_modules))]
-    pub module: Option<String>,
+    /// Module names (format: module or module@target), separated by commas. If passed without values, builds all modules.
+    #[arg(short, long, num_args = 0.., value_delimiter = ',', add = ArgValueCompleter::new(crate::completion::complete_modules), conflicts_with = "products")]
+    pub modules: Option<Vec<String>>,
     /// Debug build mode
     #[arg(long, conflicts_with = "release")]
     pub debug: bool,
@@ -22,20 +23,25 @@ pub struct BuildArgs {
     #[arg(long, short)]
     pub quiet: bool,
     /// Specify one or more product names to build app, separated by commas. If passed without values, builds all products.
-    #[arg(long, num_args = 0.., value_delimiter = ',', add = ArgValueCompleter::new(crate::completion::complete_products))]
+    #[arg(long, num_args = 0.., value_delimiter = ',', add = ArgValueCompleter::new(crate::completion::complete_products), conflicts_with = "modules")]
     pub products: Option<Vec<String>>,
 }
 
 impl BuildArgs {
-    pub fn parse_module(&self) -> Option<(String, Option<String>)> {
-        self.module.as_ref().map(|m| {
-            if let Some(idx) = m.find('@') {
-                let module_name = m[..idx].to_string();
-                let target_name = m[idx + 1..].to_string();
-                (module_name, Some(target_name))
-            } else {
-                (m.clone(), None)
-            }
+    pub fn parse_modules(&self) -> Option<Vec<(String, Option<String>)>> {
+        self.modules.as_ref().map(|modules| {
+            modules
+                .iter()
+                .map(|m| {
+                    if let Some(idx) = m.find('@') {
+                        let module_name = m[..idx].to_string();
+                        let target_name = m[idx + 1..].to_string();
+                        (module_name, Some(target_name))
+                    } else {
+                        (m.clone(), None)
+                    }
+                })
+                .collect()
         })
     }
 }
@@ -60,22 +66,6 @@ pub(crate) fn handle_build(args: BuildArgs) {
         }
     };
 
-    if !args.quiet {
-        println!("{:>9} project", "Syncing".green().bold());
-    }
-    if let Err(e) = hvigor::sync(&project_root, &config, args.quiet, 9) {
-        eprintln!("{}", format!("error: sync failed: {}", e).red());
-        std::process::exit(1);
-    }
-
-    if let Err(e) = crate::adapters::ohpm::install(&project_root, &config, args.quiet) {
-        eprintln!("{}", format!("error: install failed: {}", e).red());
-        std::process::exit(1);
-    }
-
-    let start = Instant::now();
-    let build_type = if args.release { "release" } else { "debug" };
-
     let project = match crate::project::load_project() {
         Ok(p) => p,
         Err(e) => {
@@ -84,27 +74,93 @@ pub(crate) fn handle_build(args: BuildArgs) {
         }
     };
 
-    let args = if args.module.is_none() && args.products.is_none() {
-        if let Ok(current_dir) = std::env::current_dir() {
-            if let Some(module) = project.find_module_by_path(&current_dir) {
-                BuildArgs {
-                    module: Some(module.name.clone()),
-                    debug: args.debug,
-                    release: args.release,
-                    quiet: args.quiet,
-                    products: args.products.clone(),
-                }
-            } else {
-                args
+    // 先预处理 args，确定有多少个 build 任务
+    let args = if let Some(modules) = &args.modules {
+        if modules.is_empty() {
+            // 如果传入了 --modules 但没有值，收集所有模块名
+            let all_modules: Vec<String> = project.modules.iter().map(|m| m.name.clone()).collect();
+            BuildArgs {
+                modules: Some(all_modules),
+                debug: args.debug,
+                release: args.release,
+                quiet: args.quiet,
+                products: args.products.clone(),
             }
         } else {
             args
+        }
+    } else if args.products.is_none() {
+        let entry_modules: Vec<_> = project
+            .modules
+            .iter()
+            .filter(|m| m.module_type == crate::project::ModuleType::Entry)
+            .collect();
+
+        let target_module = if entry_modules.len() == 1 {
+            Some(entry_modules[0].name.clone())
+        } else if project.modules.len() == 1 {
+            Some(project.modules[0].name.clone())
+        } else {
+            None
+        };
+
+        if let Some(module_name) = target_module {
+            BuildArgs {
+                modules: Some(vec![module_name]),
+                debug: args.debug,
+                release: args.release,
+                quiet: args.quiet,
+                products: args.products.clone(),
+            }
+        } else {
+            eprintln!(
+                "{}",
+                "error: no modules specified. Please specify modules using --modules or --products. \
+                 (e.g., `heco build --modules entry` or `heco build --products`)".red()
+            );
+            std::process::exit(1);
         }
     } else {
         args
     };
 
-    let (module_name, target_name) = args.parse_module().unwrap_or((String::new(), None));
+    // 计算总任务数
+    let num_build_tasks = if let Some(products) = &args.products {
+        if products.is_empty() {
+            project.products.len()
+        } else {
+            products.len()
+        }
+    } else {
+        1
+    };
+    let total_tasks = 2 + num_build_tasks; // sync + ohpm + build(s)
+
+    let bar = StatusBar::new(total_tasks, args.quiet);
+    let total_start = Instant::now();
+    let build_type = if args.release { "release" } else { "debug" };
+
+    // 任务 1: Sync
+    {
+        let _task = bar.task("Syncing", "project");
+        if let Err(e) = hvigor::sync(&project_root, &config, args.quiet, 12, Some(&bar)) {
+            eprintln!("{}", format!("error: sync failed: {}", e).red());
+            std::process::exit(1);
+        }
+    }
+
+    // 任务 2: Ohpm Install
+    {
+        let _task = bar.task("Installing", "dependencies");
+        if let Err(e) =
+            crate::adapters::ohpm::install(&project_root, &config, args.quiet, Some(&bar))
+        {
+            eprintln!("{}", format!("error: install failed: {}", e).red());
+            std::process::exit(1);
+        }
+    }
+
+    let parsed_modules = args.parse_modules().unwrap_or_default();
 
     if let Some(products) = &args.products {
         let target_products = if products.is_empty() {
@@ -118,38 +174,21 @@ pub(crate) fn handle_build(args: BuildArgs) {
             std::process::exit(1);
         }
 
-        let total_start = Instant::now();
         for product in &target_products {
-            if !args.quiet {
-                println!(
-                    "{:>9} product {} ({})",
-                    "Compiling".green().bold(),
-                    product,
-                    project_root.display()
-                );
-            }
+            let desc = format!("product {} ({})", product, project_root.display());
+            let _task = bar.task("Compiling", &desc);
 
             // Create a temporary args just for this product
             let single_product_args = BuildArgs {
-                module: args.module.clone(),
+                modules: args.modules.clone(),
                 debug: args.debug,
                 release: args.release,
                 quiet: args.quiet,
                 products: Some(vec![product.clone()]),
             };
 
-            match hvigor::build(&single_product_args, &project_root, &config, 9) {
-                Ok(_) => {
-                    if !args.quiet {
-                        println!(
-                            "{:>9} {} product {} in {:.2?}",
-                            "Finished".green().bold(),
-                            build_type,
-                            product,
-                            start.elapsed()
-                        );
-                    }
-                }
+            match hvigor::build(&single_product_args, &project_root, &config, 12, Some(&bar)) {
+                Ok(_) => {}
                 Err(e) => {
                     eprintln!(
                         "{}",
@@ -159,48 +198,42 @@ pub(crate) fn handle_build(args: BuildArgs) {
                 }
             }
         }
-
-        if target_products.len() > 1 && !args.quiet {
-            println!(
-                "{:>9} {} product(s) in {:.2?}",
-                "Finished".green().bold(),
-                build_type,
-                total_start.elapsed()
-            );
-        }
     } else {
-        let display_name = if module_name.is_empty() {
+        let display_name = if parsed_modules.is_empty() {
             "project".to_string()
-        } else if let Some(target) = target_name {
-            format!("{}@{}", module_name, target)
         } else {
-            module_name.clone()
+            parsed_modules
+                .iter()
+                .map(|(m, t)| {
+                    if let Some(target) = t {
+                        format!("{}@{}", m, target)
+                    } else {
+                        m.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(",")
         };
+        let desc = format!("{} ({})", display_name, project_root.display());
 
-        if !args.quiet {
-            println!(
-                "{:>9} {} ({})",
-                "Compiling".green().bold(),
-                display_name,
-                project_root.display()
-            );
-        }
+        let _task = bar.task("Compiling", &desc);
 
-        match hvigor::build(&args, &project_root, &config, 9) {
-            Ok(_) => {
-                if !args.quiet {
-                    println!(
-                        "{:>9} {} module(s) in {:.2?}",
-                        "Finished".green().bold(),
-                        build_type,
-                        start.elapsed()
-                    );
-                }
-            }
+        match hvigor::build(&args, &project_root, &config, 12, Some(&bar)) {
+            Ok(_) => {}
             Err(e) => {
                 eprintln!("{}", format!("error: build failed: {}", e).red());
                 std::process::exit(1);
             }
         }
+    }
+
+    // 结束，显示总完成信息
+    if !args.quiet {
+        bar.finish_with_message(&format!(
+            "{:>12} {} in {:.2?}",
+            "Finished".green().bold(),
+            build_type,
+            total_start.elapsed()
+        ));
     }
 }

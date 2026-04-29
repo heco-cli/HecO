@@ -16,7 +16,7 @@
 
 ## ✨ 核心特性
 
-- 🚀 **极速构建 (`build`)**：自动推断工程结构，支持 `module@target` 粒度构建，完美集成 `hvigor` 且支持多产品 (`--products`) 一键循环构建 `assembleApp`。
+- 🚀 **极速构建 (`build`)**：自动推断工程结构，支持 `module@target` 粒度构建及多模块同时构建，完美集成 `hvigor` 且支持多产品 (`--products`) 一键循环构建 `assembleApp`。
 - 📦 **智能运行 (`run`)**：内置日志追踪，自动解析依赖并在推送 HAP 的同时连带安装相关 HSP，过滤 `hilog` 及 `FaultLogger` 精准捕获崩溃。
 - 🧹 **一键清理 (`clean`)**：支持工程或单模块清理，同时提供 `--with-devices` / `--with-all-devices` 参数快速卸载远端设备上的应用。
 - 📱 **设备与模拟器管理 (`device`** **/** **`emulator`)**：跨平台（macOS/Windows）快速启动、停止模拟器实例，列出可用物理设备及模拟器。
@@ -71,7 +71,10 @@ heco env --help
 heco build
 
 # 构建特定模块及其 target
-heco build --module entry@default
+heco build --modules entry@default
+
+# 构建多个模块
+heco build --modules entry,feature
 
 # 一键构建所有 product 的 APP 包
 heco build --products

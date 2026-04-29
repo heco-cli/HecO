@@ -10,6 +10,7 @@ mod device;
 mod emulator;
 mod env;
 mod lint;
+mod progress;
 mod project;
 mod run;
 

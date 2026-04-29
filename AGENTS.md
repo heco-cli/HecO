@@ -13,7 +13,7 @@ cargo run -- <command>
   - `add` - Add a DevEco Studio path (auto-extracts apiVersion/version)
   - `remove` - Remove a DevEco Studio path or version
   - `list` - List current environment configurations
-- `build` - Build modules(s) and product(s) (supports `-m/--module` and `--products`)
+- `build` - Build modules(s) and product(s) (supports `-m/--modules` and `--products`)
 - `clean` - Clean build artifacts and uninstall application from devices (supports `--with-devices` and `--with-all-devices`)
 - `lint` - Run code linter (codelinter) and fix issues (supports `--fix` and `--products`)
 - `emulator` - Manage emulator instances (`start`, `stop`, `list`)

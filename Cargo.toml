@@ -1,6 +1,6 @@
 [package]
 name = "heco"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 authors = ["Ockham Liu <ockhamliu@outlook.com>"]
 description = "The HarmonyOS app development CLI tool built for you and AI agents."

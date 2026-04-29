@@ -81,18 +81,18 @@ pub(crate) fn handle_clean(args: CleanArgs) {
             None => "project".to_string(),
         };
         println!(
-            "{:>9} {} ({})",
+            "{:>12} {} ({})",
             "Cleaning".green().bold(),
             target_display,
             project_root.display()
         );
     }
 
-    match hvigor::clean(&args, &project_root, &config, 9) {
+    match hvigor::clean(&args, &project_root, &config, 12, None) {
         Ok(_) => {
             if !args.quiet {
                 println!(
-                    "{:>9} in {:.2?}",
+                    "{:>12} in {:.2?}",
                     "Finished".green().bold(),
                     start.elapsed()
                 );
@@ -154,7 +154,7 @@ fn handle_uninstall(
     for (device_name, device_id) in target_devices {
         if !args.quiet {
             println!(
-                "{:>9} {} from {} ({})",
+                "{:>12} {} from {} ({})",
                 "Uninstall".blue().bold(),
                 bundle_name,
                 device_name,

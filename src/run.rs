@@ -144,7 +144,7 @@ pub fn handle_run(args: RunArgs) -> Result<()> {
     // 3. Build (call heco build)
     println!("Building module {}...", module_name);
     let build_args = BuildArgs {
-        module: Some(format!("{}@{}", module_name, target_name)),
+        modules: Some(vec![format!("{}@{}", module_name, target_name)]),
         debug: false,
         release: false,
         quiet: false,

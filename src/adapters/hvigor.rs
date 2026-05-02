@@ -137,22 +137,40 @@ fn run_command_with_log_handling(
 impl BuildArgs {
     pub fn to_command_args(&self, project_root: &PathBuf) -> anyhow::Result<Vec<String>> {
         let mut args = Vec::new();
+        let project = load_project()?;
+        if project.root != *project_root {
+            anyhow::bail!("project root mismatch");
+        }
 
-        if let Some(products) = &self.products {
+        // Handle product parameter
+        let product = if let Some(products) = &self.products {
+            if !products.is_empty() {
+                if self.modules.is_some() && products.len() > 1 {
+                    anyhow::bail!("only one product is allowed when using --modules parameter");
+                }
+                let p = &products[0];
+                project.validate_product(p)?;
+                Some(p)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if self.products.is_some() && self.modules.is_none() {
+            // Only products specified, use assembleApp
             args.push("assembleApp".to_string());
 
-            let project = load_project()?;
-            if project.root != *project_root {
-                anyhow::bail!("project root mismatch");
-            }
-
             // Since build.rs now handles loop logic, self.products should only contain exactly 1 product
-            if let Some(p) = products.first() {
-                project.validate_product(p)?;
+            if let Some(p) = product {
                 args.push("-p".to_string());
                 args.push(format!("product={}", p));
             }
-        } else {
+        }
+
+        // Handle modules parameter (whether products are specified or not)
+        if self.modules.is_some() {
             let parsed_modules = self.parse_modules().unwrap_or_default();
 
             if parsed_modules.is_empty() {
@@ -174,6 +192,12 @@ impl BuildArgs {
 
                 args.push("-p".to_string());
                 args.push(format!("module={}", module_names.join(",")));
+            }
+
+            // Add product parameter if specified
+            if let Some(p) = product {
+                args.push("-p".to_string());
+                args.push(format!("product={}", p));
             }
         }
 

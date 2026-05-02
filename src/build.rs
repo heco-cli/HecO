@@ -11,7 +11,7 @@ use std::time::Instant;
 #[derive(Parser, Debug)]
 pub struct BuildArgs {
     /// Module names (format: module or module@target), separated by commas. If passed without values, builds all modules.
-    #[arg(short, long, num_args = 0.., value_delimiter = ',', add = ArgValueCompleter::new(crate::completion::complete_modules), conflicts_with = "products")]
+    #[arg(short, long, num_args = 0.., value_delimiter = ',', add = ArgValueCompleter::new(crate::completion::complete_modules))]
     pub modules: Option<Vec<String>>,
     /// Debug build mode
     #[arg(long, conflicts_with = "release")]
@@ -22,8 +22,8 @@ pub struct BuildArgs {
     /// Quiet mode, reduce output
     #[arg(long, short)]
     pub quiet: bool,
-    /// Specify one or more product names to build app, separated by commas. If passed without values, builds all products.
-    #[arg(long, num_args = 0.., value_delimiter = ',', add = ArgValueCompleter::new(crate::completion::complete_products), conflicts_with = "modules")]
+    /// Build .app product packages, or specify the product to use when building modules. Separated by commas. If passed without values, builds all products.
+    #[arg(long, num_args = 0.., value_delimiter = ',', add = ArgValueCompleter::new(crate::completion::complete_products))]
     pub products: Option<Vec<String>>,
 }
 
@@ -162,7 +162,45 @@ pub(crate) fn handle_build(args: BuildArgs) {
 
     let parsed_modules = args.parse_modules().unwrap_or_default();
 
-    if let Some(products) = &args.products {
+    if args.modules.is_some() {
+        // When modules are specified, build them directly (product parameter will be handled in hvigor.rs)
+        let display_name = if parsed_modules.is_empty() {
+            "project".to_string()
+        } else {
+            parsed_modules
+                .iter()
+                .map(|(m, t)| {
+                    if let Some(target) = t {
+                        format!("{}@{}", m, target)
+                    } else {
+                        m.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+
+        let desc = if let Some(products) = &args.products {
+            if !products.is_empty() {
+                format!("{} for product {} ({})", display_name, products[0], project_root.display())
+            } else {
+                format!("{} ({})", display_name, project_root.display())
+            }
+        } else {
+            format!("{} ({})", display_name, project_root.display())
+        };
+
+        let _task = bar.task("Compiling", &desc);
+
+        match hvigor::build(&args, &project_root, &config, 12, Some(&bar)) {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("{}", format!("error: build failed: {}", e).red());
+                std::process::exit(1);
+            }
+        }
+    } else if let Some(products) = &args.products {
+        // Only products specified, loop through them
         let target_products = if products.is_empty() {
             project.products.clone()
         } else {
@@ -199,32 +237,9 @@ pub(crate) fn handle_build(args: BuildArgs) {
             }
         }
     } else {
-        let display_name = if parsed_modules.is_empty() {
-            "project".to_string()
-        } else {
-            parsed_modules
-                .iter()
-                .map(|(m, t)| {
-                    if let Some(target) = t {
-                        format!("{}@{}", m, target)
-                    } else {
-                        m.clone()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(",")
-        };
-        let desc = format!("{} ({})", display_name, project_root.display());
-
-        let _task = bar.task("Compiling", &desc);
-
-        match hvigor::build(&args, &project_root, &config, 12, Some(&bar)) {
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("{}", format!("error: build failed: {}", e).red());
-                std::process::exit(1);
-            }
-        }
+        // No modules or products specified (should not happen due to earlier validation)
+        eprintln!("{}", "error: no modules or products specified".red());
+        std::process::exit(1);
     }
 
     // 结束，显示总完成信息

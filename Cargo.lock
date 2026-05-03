@@ -399,6 +399,7 @@ dependencies = [
  "anyhow",
  "clap",
  "clap_complete",
+ "console 0.15.11",
  "ctrlc",
  "dialoguer",
  "dirs",

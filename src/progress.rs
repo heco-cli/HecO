@@ -45,7 +45,12 @@ impl StatusBar {
         if self.quiet {
             return;
         }
-        self.bar.println(content);
+        if std::env::var("NO_COLOR").is_ok() {
+            self.bar
+                .println(anstream::adapter::strip_str(content).to_string());
+        } else {
+            self.bar.println(content);
+        }
     }
 
     /// 开始一个任务，返回任务guard
@@ -65,7 +70,12 @@ impl StatusBar {
 
         // 统一宽度 12，右对齐（模仿 Cargo）
         let start_msg = format!("{:>12} {}", name.green().bold(), description);
-        self.bar.println(start_msg);
+        if std::env::var("NO_COLOR").is_ok() {
+            self.bar
+                .println(anstream::adapter::strip_str(&start_msg).to_string());
+        } else {
+            self.bar.println(start_msg);
+        }
 
         // 设置状态栏消息，进度数字放在对齐文字后面
         let status_line = format!(
@@ -76,7 +86,12 @@ impl StatusBar {
             state.total
         );
 
-        self.bar.set_message(status_line);
+        if std::env::var("NO_COLOR").is_ok() {
+            self.bar
+                .set_message(anstream::adapter::strip_str(&status_line).to_string());
+        } else {
+            self.bar.set_message(status_line);
+        }
         self.bar.set_position(state.current as u64);
     }
 

@@ -182,7 +182,12 @@ pub(crate) fn handle_build(args: BuildArgs) {
 
         let desc = if let Some(products) = &args.products {
             if !products.is_empty() {
-                format!("{} for product {} ({})", display_name, products[0], project_root.display())
+                format!(
+                    "{} for product {} ({})",
+                    display_name,
+                    products[0],
+                    project_root.display()
+                )
             } else {
                 format!("{} ({})", display_name, project_root.display())
             }

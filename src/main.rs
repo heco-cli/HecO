@@ -98,8 +98,16 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.color {
-        ColorChoice::Always => unsafe { std::env::set_var("CLICOLOR_FORCE", "1") },
-        ColorChoice::Never => unsafe { std::env::set_var("NO_COLOR", "1") },
+        ColorChoice::Always => {
+            unsafe { std::env::set_var("CLICOLOR_FORCE", "1") };
+            console::set_colors_enabled(true);
+            console::set_colors_enabled_stderr(true);
+        }
+        ColorChoice::Never => {
+            unsafe { std::env::set_var("NO_COLOR", "1") };
+            console::set_colors_enabled(false);
+            console::set_colors_enabled_stderr(false);
+        }
         ColorChoice::Auto => {}
     }
 

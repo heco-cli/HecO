@@ -114,11 +114,7 @@ impl Module {
         let targets: Vec<String> = info
             .targets
             .as_ref()
-            .map(|t| {
-                t.iter()
-                    .filter_map(|target| target.name.clone())
-                    .collect()
-            })
+            .map(|t| t.iter().filter_map(|target| target.name.clone()).collect())
             .unwrap_or_default();
 
         let module_type = if module_path.join("src/main/module.json5").exists() {

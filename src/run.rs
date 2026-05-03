@@ -141,10 +141,23 @@ pub fn handle_run(args: RunArgs) -> Result<()> {
     let is_emulator =
         target_device_id.contains("127.0.0.1") || target_device_id.contains("localhost");
 
-    // 3. Build (call heco build)
-    println!("Building module {}...", module_name);
+    // 3. Resolve dependencies and build
+    let bundle_name = project.get_bundle_name()?;
+    let mut artifacts_to_install = Vec::new();
+    let mut hsp_modules = Vec::new();
+
+    // 3.1 Resolve all HSP dependencies first (recursive)
+    project.resolve_hsp_dependencies(main_module, &mut hsp_modules)?;
+
+    // 3.2 Build main module + all dependent HSP modules together
+    let mut build_modules = vec![format!("{}@{}", module_name, target_name)];
+    for hsp_mod in &hsp_modules {
+        build_modules.push(format!("{}@{}", hsp_mod.name, target_name));
+    }
+
+    println!("Building modules: {}...", build_modules.join(", "));
     let build_args = BuildArgs {
-        modules: Some(vec![format!("{}@{}", module_name, target_name)]),
+        modules: Some(build_modules),
         debug: false,
         release: false,
         quiet: false,
@@ -152,13 +165,7 @@ pub fn handle_run(args: RunArgs) -> Result<()> {
     };
     handle_build(build_args); // Assume this succeeds and generates the artifacts
 
-    // 4. Resolve artifacts and dependencies
-    let bundle_name = project.get_bundle_name()?;
-    let mut artifacts_to_install = Vec::new();
-    let mut hsp_modules = Vec::new();
-
-    // 4.1 Resolve HSP dependencies
-    project.resolve_hsp_dependencies(main_module, &mut hsp_modules)?;
+    // 4. Resolve artifacts
 
     // 4.2 Find paths for HSPs
     for hsp_mod in &hsp_modules {

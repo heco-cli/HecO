@@ -77,8 +77,69 @@ impl Config {
 
         #[cfg(target_os = "windows")]
         {
-            let default_paths = vec![PathBuf::from("C:\\Program Files\\Huawei\\DevEco Studio")];
-            for path in default_paths {
+            let mut paths = Vec::new();
+
+            // 1. 通过注册表获取 DevEco Studio (基于 JetBrains 系列的注册表特征)
+            // 常见的卸载列表路径
+            let uninstall_keys = [
+                (
+                    winreg::enums::HKEY_LOCAL_MACHINE,
+                    "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+                ),
+                (
+                    winreg::enums::HKEY_CURRENT_USER,
+                    "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+                ),
+                (
+                    winreg::enums::HKEY_LOCAL_MACHINE,
+                    "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+                ),
+                (
+                    winreg::enums::HKEY_CURRENT_USER,
+                    "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+                ),
+            ];
+
+            for (hkey, subkey) in uninstall_keys {
+                let hk = winreg::RegKey::predef(hkey);
+                if let Ok(uninstall_key) = hk.open_subkey(subkey) {
+                    for name in uninstall_key.enum_keys().filter_map(|k| k.ok()) {
+                        if name.starts_with("DevEco Studio") {
+                            if let Ok(app_key) = uninstall_key.open_subkey(&name) {
+                                if let Ok(install_location) =
+                                    app_key.get_value::<String, _>("InstallLocation")
+                                {
+                                    let path = PathBuf::from(install_location);
+                                    if path.exists() {
+                                        paths.push(path);
+                                    }
+                                } else if let Ok(uninstall_string) =
+                                    app_key.get_value::<String, _>("UninstallString")
+                                {
+                                    // UninstallString 通常类似于 "C:\Program Files\Huawei\DevEco Studio\bin\uninstall.exe"
+                                    let clean_str = uninstall_string.trim_matches('"');
+                                    let uninstall_path = PathBuf::from(clean_str);
+                                    if let Some(bin_dir) = uninstall_path.parent() {
+                                        if let Some(root_dir) = bin_dir.parent() {
+                                            if root_dir.exists() {
+                                                paths.push(root_dir.to_path_buf());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. 兜底方案：常见的默认安装路径
+            let default_path = PathBuf::from("C:\\Program Files\\Huawei\\DevEco Studio");
+            if default_path.exists() {
+                paths.push(default_path);
+            }
+
+            for path in paths {
                 if path.exists() {
                     return Some(path);
                 }

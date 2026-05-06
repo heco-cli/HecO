@@ -101,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Publish to Winget
-        uses: vedantmgoyal9/winget-releaser@v2
+        uses: vedantmgoyal9/winget-releaser@main
         with:
           identifier: HecO-CLI.HecO
           installers-regex: '\.zip$'

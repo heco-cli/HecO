@@ -20,6 +20,7 @@ cargo run -- <command>
 - `run` - Run application on a device or emulator (supports `--daemon`, `--app-log-level`)
 - `device` - Manage device(s), include emulator and physical device (`list`)
 - `completion` - Generate shell completion scripts (supports unstable-dynamic completion)
+- `update` - Update heco to the latest version (auto-detects Cargo/Homebrew/Winget)
 
 ## Key Config Paths
 

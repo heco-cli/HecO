@@ -13,6 +13,8 @@ mod lint;
 mod progress;
 mod project;
 mod run;
+mod update;
+mod updater;
 
 use crate::build::{BuildArgs, handle_build};
 use clean::{CleanArgs, handle_clean};
@@ -88,6 +90,11 @@ enum Commands {
     /// Generate shell completion scripts
     #[command(name = "completion", display_order = 8)]
     Completion(CompletionArgs),
+    /// Update heco to the latest version
+    #[command(name = "update", display_order = 9)]
+    Update(crate::update::UpdateArgs),
+    #[command(name = "__internal_update_check", hide = true)]
+    InternalUpdateCheck,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -109,6 +116,23 @@ fn main() -> anyhow::Result<()> {
             console::set_colors_enabled_stderr(false);
         }
         ColorChoice::Auto => {}
+    }
+
+    let is_internal_check = matches!(&cli.command, Commands::InternalUpdateCheck);
+    let is_update = matches!(&cli.command, Commands::Update(_));
+    let is_completion = matches!(&cli.command, Commands::Completion(_));
+
+    if !is_internal_check
+        && !is_completion
+        && crate::updater::should_check_update()
+        && let Ok(exe) = std::env::current_exe()
+    {
+        let _ = std::process::Command::new(exe)
+            .arg("__internal_update_check")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
     }
 
     match cli.command {
@@ -136,6 +160,30 @@ fn main() -> anyhow::Result<()> {
         Commands::Completion(args) => {
             handle_completion(args)?;
         }
+        Commands::Update(args) => {
+            crate::update::handle_update(args)?;
+        }
+        Commands::InternalUpdateCheck => {
+            let _ = crate::updater::check_and_cache_update();
+            return Ok(());
+        }
     }
+
+    if !is_internal_check
+        && !is_update
+        && !is_completion
+        && let Some(latest) = crate::updater::get_cached_update()
+    {
+        println!(
+            "\n{}",
+            console::style(format!(
+                "🌟 A new version is available ({} -> {}). Run `heco update` to update.",
+                env!("CARGO_PKG_VERSION"),
+                latest
+            ))
+            .yellow()
+        );
+    }
+
     Ok(())
 }

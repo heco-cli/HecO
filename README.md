@@ -154,6 +154,7 @@ HecO 配置文件采用 TOML 格式（强制 **kebab-case** 规范）。
 - `run` - 在设备或模拟器上运行应用，并追踪全生命周期日志
 - `device` - 物理设备与模拟器设备连接状态管理
 - `completion` - 生成对应 Shell 环境的自动补全脚本
+- `update` - 自动检测安装方式（Cargo/Homebrew/Winget）并更新 heco 至最新版本
 
 ## 🤝 参与贡献
 

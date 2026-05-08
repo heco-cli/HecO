@@ -4,6 +4,7 @@
 **The HarmonyOS app development CLI tool built for you and AI agents.**
 
 [![Rust](https://img.shields.io/badge/rust-1.60%2B-blue.svg)](https://www.rust-lang.org)
+[![Crates.io](https://img.shields.io/crates/v/heco.svg)](https://crates.io/crates/heco)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey.svg)]()
 [![Homebrew](https://img.shields.io/badge/homebrew-tap-orange.svg?logo=homebrew)](https://github.com/heco-cli/homebrew-tap)
@@ -42,14 +43,12 @@ brew install heco
 winget install HecO-CLI.HecO -s winget
 ```
 
-### 从源码安装
+### 使用 Cargo 安装
 
-依赖`Rust`环境
+依赖 `Rust` 环境
 
 ```bash
-git clone git@github.com:heco-cli/heco.git
-cd heco
-cargo install --path .
+cargo install heco --locked
 ```
 
 安装完成后，在终端运行 `heco --help` 验证是否安装成功。

@@ -1,3 +1,4 @@
+use crate::output;
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use clap_complete::Shell;
@@ -128,46 +129,46 @@ pub fn handle_completion(args: CompletionArgs) -> Result<()> {
                 detected = "fish";
             }
 
-            println!("heco command-line completions (Dynamic)");
-            println!("=======================================");
-            println!(
-                "To enable dynamic completions for your shell, run the corresponding command:"
+            output::line("heco command-line completions (Dynamic)");
+            output::line("=======================================");
+            output::line(
+                "To enable dynamic completions for your shell, run the corresponding command:",
             );
-            println!();
+            output::line("");
 
             if detected == "zsh" {
-                println!("🌟 Detected Zsh. Add this to your ~/.zshrc:");
-                println!("   autoload -Uz compinit; compinit");
-                println!("   source <(heco completion zsh)");
+                output::line("🌟 Detected Zsh. Add this to your ~/.zshrc:");
+                output::line("   autoload -Uz compinit; compinit");
+                output::line("   source <(heco completion zsh)");
             } else {
-                println!("Zsh:");
-                println!("   autoload -Uz compinit; compinit");
-                println!("   source <(heco completion zsh)");
+                output::line("Zsh:");
+                output::line("   autoload -Uz compinit; compinit");
+                output::line("   source <(heco completion zsh)");
             }
-            println!();
+            output::line("");
 
             if detected == "bash" {
-                println!("🌟 Detected Bash. Add this to your ~/.bashrc:");
-                println!("   eval \"$(heco completion bash)\"");
+                output::line("🌟 Detected Bash. Add this to your ~/.bashrc:");
+                output::line("   eval \"$(heco completion bash)\"");
             } else {
-                println!("Bash:");
-                println!("   eval \"$(heco completion bash)\"");
+                output::line("Bash:");
+                output::line("   eval \"$(heco completion bash)\"");
             }
-            println!();
+            output::line("");
 
             if detected == "fish" {
-                println!("🌟 Detected Fish. Add this to your ~/.config/fish/config.fish:");
-                println!("   heco completion fish | source");
+                output::line("🌟 Detected Fish. Add this to your ~/.config/fish/config.fish:");
+                output::line("   heco completion fish | source");
             } else {
-                println!("Fish:");
-                println!("   heco completion fish | source");
+                output::line("Fish:");
+                output::line("   heco completion fish | source");
             }
-            println!();
+            output::line("");
 
-            println!("PowerShell:");
-            println!("   heco completion powershell | Out-String | Invoke-Expression");
-            println!();
-            println!("(Note: After adding the command to your config, restart your terminal.)");
+            output::line("PowerShell:");
+            output::line("   heco completion powershell | Out-String | Invoke-Expression");
+            output::line("");
+            output::line("(Note: After adding the command to your config, restart your terminal.)");
         }
     }
 

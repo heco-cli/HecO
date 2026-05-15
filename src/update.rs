@@ -1,3 +1,4 @@
+use crate::output;
 use clap::Parser;
 use std::env;
 use std::process::{Command, Stdio};
@@ -6,7 +7,7 @@ use std::process::{Command, Stdio};
 pub struct UpdateArgs {}
 
 pub fn handle_update(_args: UpdateArgs) -> anyhow::Result<()> {
-    println!("Checking for updates...");
+    output::status("Checking", "for updates");
 
     let current_version = env!("CARGO_PKG_VERSION");
     let latest_version = match crate::updater::fetch_latest_version() {
@@ -17,18 +18,14 @@ pub fn handle_update(_args: UpdateArgs) -> anyhow::Result<()> {
     };
 
     if !is_newer_version(current_version, &latest_version) {
-        println!(
-            "You are already using the latest version ({})",
-            current_version
-        );
+        output::status("Using", format!("latest version ({})", current_version));
         return Ok(());
     }
 
-    println!(
-        "Found new version: {} -> {}",
-        current_version, latest_version
+    output::status(
+        "Updating",
+        format!("{} -> {}", current_version, latest_version),
     );
-    println!("Updating heco...");
 
     // Auto detect installation method based on executable path
     let exe_path = match env::current_exe() {
@@ -41,7 +38,7 @@ pub fn handle_update(_args: UpdateArgs) -> anyhow::Result<()> {
     let exe_str = exe_path.to_string_lossy().to_lowercase();
 
     let mut command = if exe_str.contains(".cargo/bin") || exe_str.contains(".cargo\\bin") {
-        println!("Detected installation method: Cargo");
+        output::status("Detected", "installation method: Cargo");
         let mut cmd = Command::new("cargo");
         cmd.args(["install", "heco"]);
         cmd
@@ -49,7 +46,7 @@ pub fn handle_update(_args: UpdateArgs) -> anyhow::Result<()> {
         || exe_str.contains("linuxbrew")
         || exe_str.contains("cellar")
     {
-        println!("Detected installation method: Homebrew");
+        output::status("Detected", "installation method: Homebrew");
         let mut cmd = Command::new("brew");
         cmd.args(["upgrade", "heco"]);
         cmd
@@ -57,13 +54,13 @@ pub fn handle_update(_args: UpdateArgs) -> anyhow::Result<()> {
         || exe_str.contains("winget")
         || exe_str.contains("winget\\packages")
     {
-        println!("Detected installation method: Winget");
+        output::status("Detected", "installation method: Winget");
         let mut cmd = Command::new("winget");
         cmd.args(["upgrade", "HecO-CLI.HecO", "-s", "winget"]);
         cmd
     } else {
-        println!(
-            "⚠️  Warning: Could not automatically detect the installation method. Please update heco manually or download from https://github.com/heco-cli/heco/releases/latest"
+        output::warning(
+            "could not automatically detect the installation method; please update heco manually or download from https://github.com/heco-cli/heco/releases/latest",
         );
         return Ok(());
     };
@@ -74,7 +71,7 @@ pub fn handle_update(_args: UpdateArgs) -> anyhow::Result<()> {
         .status()?;
 
     if status.success() {
-        println!("✨ Successfully updated heco to version {}", latest_version);
+        output::status("Updated", format!("heco to version {}", latest_version));
 
         // Update the cache so it doesn't prompt again immediately
         let _ = crate::updater::update_cache(&latest_version);

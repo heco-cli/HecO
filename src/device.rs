@@ -1,6 +1,6 @@
 use crate::adapters::hdc::list_targets;
 use crate::config::Config;
-use anstream::println;
+use crate::output;
 use anyhow::Result;
 use clap::{Args, Subcommand};
 
@@ -30,10 +30,10 @@ fn handle_list(_args: ListArgs) -> Result<()> {
     let devices = list_targets(&config)?;
 
     if devices.is_empty() {
-        println!("No active devices found.");
+        output::stdout_line("No active devices found.");
     } else {
         for (name, target) in devices {
-            println!("{} ({})", name, target);
+            output::stdout_line(format!("{} ({})", name, target));
         }
     }
 

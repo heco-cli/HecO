@@ -1,6 +1,7 @@
 use crate::adapters::hdc;
 use crate::build::{BuildArgs, handle_build};
 use crate::config::Config;
+use crate::output;
 use crate::project::{Module, ModuleType};
 use anyhow::{Result, bail};
 use clap::{Parser, ValueEnum};
@@ -72,7 +73,7 @@ pub fn handle_run(args: RunArgs) -> Result<()> {
     // 1. Identify module
     let run_args = if args.module.is_none() {
         if let Some(module) = project.find_module_by_path(&current_dir) {
-            println!("Auto-detected module: {}", module.name);
+            output::status("Detected", format!("module {}", module.name));
             RunArgs {
                 module: Some(module.name.clone()),
                 ..args
@@ -86,7 +87,7 @@ pub fn handle_run(args: RunArgs) -> Result<()> {
 
             if runnable_modules.len() == 1 {
                 let module = runnable_modules[0];
-                println!("Auto-selected module: {}", module.name);
+                output::status("Selected", format!("module {}", module.name));
                 RunArgs {
                     module: Some(module.name.clone()),
                     ..args
@@ -155,15 +156,15 @@ pub fn handle_run(args: RunArgs) -> Result<()> {
         build_modules.push(format!("{}@{}", hsp_mod.name, target_name));
     }
 
-    println!("Building modules: {}...", build_modules.join(", "));
+    output::status("Compiling", build_modules.join(", "));
     let build_args = BuildArgs {
         modules: Some(build_modules),
         debug: false,
         release: false,
-        quiet: false,
+        quiet: crate::output::is_quiet(),
         products: None,
     };
-    handle_build(build_args); // Assume this succeeds and generates the artifacts
+    handle_build(build_args)?;
 
     // 4. Resolve artifacts
 
@@ -184,7 +185,10 @@ pub fn handle_run(args: RunArgs) -> Result<()> {
     artifacts_to_install.push(main_hap_path);
 
     // 5. Install all
-    println!("Installing artifacts to device {}...", target_device_id);
+    output::status(
+        "Installing",
+        format!("artifacts to device {}", target_device_id),
+    );
     let hdc_cmd = hdc::find_hdc_binary(&config)?;
     let mut install_cmd = Command::new(&hdc_cmd);
     install_cmd
@@ -209,7 +213,7 @@ pub fn handle_run(args: RunArgs) -> Result<()> {
         .get_main_ability(main_module)
         .unwrap_or_else(|_| "EntryAbility".to_string());
 
-    println!("Launching {}/{}...", bundle_name, main_ability);
+    output::status("Launching", format!("{bundle_name}/{main_ability}"));
     let launch_status = Command::new(&hdc_cmd)
         .arg("-t")
         .arg(&target_device_id)
@@ -228,12 +232,12 @@ pub fn handle_run(args: RunArgs) -> Result<()> {
 
     // If daemon mode, exit now
     if run_args.daemon {
-        println!("Application launched in daemon mode.");
+        output::status("Running", "application launched in daemon mode");
         return Ok(());
     }
 
     // 7. Log streaming
-    println!("Streaming logs for {}...", bundle_name);
+    output::status("Streaming", format!("logs for {}", bundle_name));
 
     // Clear logs first
     let _ = Command::new(&hdc_cmd)
@@ -277,7 +281,7 @@ pub fn handle_run(args: RunArgs) -> Result<()> {
     let hdc_clone = hdc_cmd.clone();
 
     ctrlc::set_handler(move || {
-        println!("\nStopping application {}...", bundle_clone);
+        output::status("Stopping", format!("application {}", bundle_clone));
         let _ = Command::new(&hdc_clone)
             .arg("-t")
             .arg(&target_clone)
@@ -319,9 +323,9 @@ pub fn handle_run(args: RunArgs) -> Result<()> {
                         std::thread::sleep(std::time::Duration::from_secs(1));
 
                         if monitor_running.load(std::sync::atomic::Ordering::SeqCst) {
-                            println!(
-                                "\nApplication process '{}' exited on device.",
-                                monitor_bundle
+                            output::status(
+                                "Exited",
+                                format!("application process '{}' on device", monitor_bundle),
                             );
                             monitor_running.store(false, std::sync::atomic::Ordering::SeqCst);
                             // Kill hilog to unblock the main log reading loop
@@ -347,7 +351,7 @@ pub fn handle_run(args: RunArgs) -> Result<()> {
         if let Ok(line) = line {
             // Filter logic: show if contains bundleName or FaultLogger
             if line.contains(&bundle_name) || line.contains("FaultLogger") {
-                println!("{}", line);
+                output::stdout_line(line);
             }
         }
     }
@@ -379,7 +383,7 @@ fn select_device(config: &Config, device_arg: &Option<String>) -> Result<String>
 
     if devices.len() == 1 {
         let (name, id) = &devices[0];
-        println!("Auto-selected device: {} ({})", name, id);
+        output::status("Selected", format!("device {} ({})", name, id));
         return Ok(id.clone());
     }
 

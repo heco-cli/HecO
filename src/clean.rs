@@ -1,10 +1,9 @@
 use crate::adapters::hvigor;
 use crate::config::Config;
+use crate::output;
 use crate::project::find_project_root;
-use anstream::{eprintln, println};
 use clap::Parser;
 use clap_complete::engine::ArgValueCompleter;
-use owo_colors::OwoColorize;
 use std::time::Instant;
 
 #[derive(Parser, Debug, Clone)]
@@ -13,8 +12,7 @@ pub struct CleanArgs {
     #[arg(long, short, add = ArgValueCompleter::new(crate::completion::complete_modules))]
     pub module: Option<String>,
 
-    /// Quiet mode, reduce output
-    #[arg(long, short)]
+    #[arg(skip)]
     pub quiet: bool,
 
     /// Uninstall the application from specific device(s) after cleaning local artifacts (comma separated)
@@ -26,33 +24,15 @@ pub struct CleanArgs {
     pub with_all_devices: bool,
 }
 
-pub(crate) fn handle_clean(args: CleanArgs) {
-    let project_root = match find_project_root() {
-        Some(path) => path,
-        None => {
-            eprintln!(
-                "{}",
-                "error: no project root found (build-profile.json5)".red()
-            );
-            std::process::exit(1);
-        }
-    };
+pub(crate) fn handle_clean(args: CleanArgs) -> anyhow::Result<()> {
+    let project_root = find_project_root()
+        .ok_or_else(|| anyhow::anyhow!("no project root found (build-profile.json5)"))?;
 
-    let config = match Config::load(Some(&project_root)) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("{}", format!("error: failed to load config: {}", e).red());
-            std::process::exit(1);
-        }
-    };
+    let config = Config::load(Some(&project_root))
+        .map_err(|e| anyhow::anyhow!("failed to load config: {e}"))?;
 
-    let project = match crate::project::load_project() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("{}", format!("error: failed to load project: {}", e).red());
-            std::process::exit(1);
-        }
-    };
+    let project = crate::project::load_project()
+        .map_err(|e| anyhow::anyhow!("failed to load project: {e}"))?;
 
     let args = if args.module.is_none() {
         if let Ok(current_dir) = std::env::current_dir() {
@@ -80,36 +60,30 @@ pub(crate) fn handle_clean(args: CleanArgs) {
             Some(m) => format!("module {}", m),
             None => "project".to_string(),
         };
-        println!(
-            "{:>12} {} ({})",
-            "Cleaning".green().bold(),
-            target_display,
-            project_root.display()
+        output::status(
+            "Cleaning",
+            format!("{target_display} ({})", project_root.display()),
         );
     }
 
-    match hvigor::clean(&args, &project_root, &config, 12, None) {
+    match hvigor::clean(&args, &project_root, &config, None) {
         Ok(_) => {
             if !args.quiet {
-                println!(
-                    "{:>12} in {:.2?}",
-                    "Finished".green().bold(),
-                    start.elapsed()
-                );
+                output::finished("", start.elapsed());
             }
         }
         Err(e) => {
-            eprintln!("{}", format!("error: clean failed: {}", e).red());
-            std::process::exit(1);
+            anyhow::bail!("clean failed: {e}");
         }
     }
 
     if (args.with_devices.is_some() || args.with_all_devices)
         && let Err(e) = handle_uninstall(&args, &project, &config)
     {
-        eprintln!("{}", format!("error: uninstall failed: {}", e).red());
-        std::process::exit(1);
+        anyhow::bail!("uninstall failed: {e}");
     }
+
+    Ok(())
 }
 
 fn handle_uninstall(
@@ -153,12 +127,9 @@ fn handle_uninstall(
 
     for (device_name, device_id) in target_devices {
         if !args.quiet {
-            println!(
-                "{:>12} {} from {} ({})",
-                "Uninstall".blue().bold(),
-                bundle_name,
-                device_name,
-                device_id
+            output::status(
+                "Uninstall",
+                format!("{bundle_name} from {device_name} ({device_id})"),
             );
         }
 

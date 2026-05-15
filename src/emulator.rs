@@ -1,10 +1,9 @@
 use crate::command::CommandRunner;
 use crate::config::Config;
-use anstream::println;
+use crate::output;
 use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
-use owo_colors::OwoColorize;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -54,7 +53,7 @@ pub fn handle_emulator(args: EmulatorArgs) -> Result<()> {
 }
 
 fn handle_start(args: StartArgs) -> Result<()> {
-    println!("{:>9} ({})", "Starting".green().bold(), args.name);
+    output::status("Starting", format!("({})", args.name));
 
     let emulator_cmd = find_emulator_binary()?;
     let config = Config::load(None)?;
@@ -103,37 +102,22 @@ fn handle_start(args: StartArgs) -> Result<()> {
     // 处理执行结果
     let output_str = String::from_utf8_lossy(&output.stdout);
 
-    if output.status.success() {
-        if output_str.contains("already exist") || output_str.contains("already running") {
-            println!(
-                "{:>9} Emulator '{}' is already running",
-                "⚠️".yellow(),
-                args.name
-            );
-        } else {
-            println!(
-                "{:>9} in {:.2}s",
-                "Finished".green().bold(),
-                elapsed_seconds
-            );
-        }
+    let already_running =
+        output_str.contains("already exist") || output_str.contains("already running");
+
+    if already_running {
+        output::warning(format!("emulator '{}' is already running", args.name));
+    } else if output.status.success() {
+        output::status("Finished", format!("in {:.2}s", elapsed_seconds));
     } else {
-        if output_str.contains("already exist") || output_str.contains("already running") {
-            println!(
-                "{:>9} Emulator '{}' is already running",
-                "⚠️".yellow(),
-                args.name
-            );
-        } else {
-            bail!("Failed to start emulator: {}", output_str.trim());
-        }
+        bail!("Failed to start emulator: {}", output_str.trim());
     }
 
     Ok(())
 }
 
 fn handle_stop(args: StopArgs) -> Result<()> {
-    println!("{:>9} ({})", "Stopping".green().bold(), args.name);
+    output::status("Stopping", format!("({})", args.name));
 
     let emulator_cmd = find_emulator_binary()?;
     let start_time = std::time::Instant::now();
@@ -142,7 +126,7 @@ fn handle_stop(args: StopArgs) -> Result<()> {
     cmd.arg("-stop").arg(&args.name);
 
     if args.force {
-        println!("{:>9} Force stopping...", "".white());
+        output::status("Stopping", "emulator");
     }
 
     let output = cmd.output()?;
@@ -150,20 +134,12 @@ fn handle_stop(args: StopArgs) -> Result<()> {
     let elapsed_seconds = elapsed.as_secs() as f64 + elapsed.subsec_millis() as f64 / 1000.0;
 
     if output.status.success() {
-        println!(
-            "{:>9} in {:.2}s",
-            "Finished".green().bold(),
-            elapsed_seconds
-        );
+        output::status("Finished", format!("in {:.2}s", elapsed_seconds));
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // If emulator is already stopped, it's not an error
         if stderr.contains("not running") || stderr.contains("stopped") {
-            println!(
-                "{:>9} Emulator '{}' is already stopped",
-                "⚠️".yellow(),
-                args.name
-            );
+            output::warning(format!("emulator '{}' is already stopped", args.name));
         } else {
             bail!("Failed to stop emulator: {}", stderr);
         }
@@ -199,15 +175,13 @@ pub fn get_emulator_list() -> Result<Vec<String>> {
 }
 
 fn handle_list(_args: ListArgs) -> Result<()> {
-    println!("Emulators:");
-
     let emulators = get_emulator_list()?;
 
     if emulators.is_empty() {
-        println!("  No emulators found.");
+        output::stdout_line("  No emulators found.");
     } else {
         for name in emulators {
-            println!("  {}", name);
+            output::stdout_line(format!("  {}", name));
         }
     }
 

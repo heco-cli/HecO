@@ -1,110 +1,155 @@
-use anstream::println;
-use indicatif::{ProgressBar, ProgressStyle};
+use crate::output;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use owo_colors::OwoColorize;
 use std::cell::RefCell;
+use std::io::IsTerminal;
 
-/// 底部状态栏管理器 - 用 indicatif
 pub struct StatusBar {
     bar: ProgressBar,
-    quiet: bool,
+    progress_enabled: bool,
     state: RefCell<State>,
 }
 
 struct State {
+    label: String,
     total: usize,
     current: usize,
 }
 
 impl StatusBar {
-    /// 创建新的状态栏
-    pub fn new(total: usize, quiet: bool) -> Self {
+    pub fn new(label: &str, total: usize) -> Self {
+        let progress_enabled = !crate::output::is_quiet()
+            && std::io::stderr().is_terminal()
+            && std::env::var("TERM")
+                .map(|term| term != "dumb")
+                .unwrap_or(true)
+            && std::env::var_os("CI").is_none();
+
         let bar = ProgressBar::new(total as u64);
-        bar.set_style(
-            ProgressStyle::default_spinner()
-                .template("{wide_msg} {spinner:.green}")
+        if progress_enabled {
+            bar.set_draw_target(ProgressDrawTarget::stderr());
+            bar.set_style(
+                ProgressStyle::with_template(
+                    "{prefix:>12} [{bar:24.green/black}] {pos}/{len}: {msg}",
+                )
                 .unwrap(),
-        );
-        bar.enable_steady_tick(std::time::Duration::from_millis(100));
+            );
+            bar.set_prefix(label.to_string());
+        } else {
+            bar.set_draw_target(ProgressDrawTarget::hidden());
+        }
 
         Self {
             bar,
-            quiet,
-            state: RefCell::new(State { total, current: 0 }),
+            progress_enabled,
+            state: RefCell::new(State {
+                label: label.to_string(),
+                total,
+                current: 0,
+            }),
         }
     }
 
-    /// 更新总任务数
     #[allow(dead_code)]
     pub fn set_total(&self, total: usize) {
-        self.state.borrow_mut().total = total;
+        let mut state = self.state.borrow_mut();
+        state.total = total;
         self.bar.set_length(total as u64);
     }
 
-    /// 打印内容，自动处理状态栏
     pub fn println(&self, content: &str) {
-        if self.quiet {
+        if crate::output::is_quiet() {
             return;
         }
-        if std::env::var("NO_COLOR").is_ok() {
-            self.bar
-                .println(anstream::adapter::strip_str(content).to_string());
+
+        let content = maybe_strip_ansi(content);
+        if self.progress_enabled {
+            self.bar.suspend(|| output::line(&content));
         } else {
-            self.bar.println(content);
+            output::line(content);
         }
     }
 
-    /// 开始一个任务，返回任务guard
+    pub fn status(&self, verb: &str, description: &str) {
+        if crate::output::is_quiet() {
+            return;
+        }
+
+        let content = format!(
+            "{:>width$} {}",
+            verb.green().bold(),
+            description,
+            width = output::STATUS_WIDTH
+        );
+        self.println(&content);
+    }
+
+    pub fn set_progress(&self, current: usize, message: &str) {
+        if crate::output::is_quiet() || !self.progress_enabled {
+            return;
+        }
+
+        let mut state = self.state.borrow_mut();
+        let position = current.min(state.total);
+        state.current = position;
+        self.bar.set_prefix(state.label.clone());
+        self.bar.set_position(position as u64);
+        self.bar.set_message(maybe_strip_ansi(message));
+        self.bar.tick();
+    }
+
+    pub fn finish_and_clear(&self) {
+        if crate::output::is_quiet() || !self.progress_enabled {
+            return;
+        }
+
+        self.bar.finish_and_clear();
+    }
+
     pub fn task(&self, name: &str, description: &str) -> TaskGuard<'_> {
         self.begin_task(name, description);
         TaskGuard { _bar: self }
     }
 
-    /// 内部：开始任务
     fn begin_task(&self, name: &str, description: &str) {
-        if self.quiet {
+        if crate::output::is_quiet() {
             return;
         }
 
         let mut state = self.state.borrow_mut();
         state.current += 1;
 
-        // 统一宽度 12，右对齐（模仿 Cargo）
-        let start_msg = format!("{:>12} {}", name.green().bold(), description);
-        if std::env::var("NO_COLOR").is_ok() {
+        if self.progress_enabled {
+            self.bar.set_prefix(state.label.clone());
+            self.bar.set_position(state.current as u64);
             self.bar
-                .println(anstream::adapter::strip_str(&start_msg).to_string());
+                .set_message(maybe_strip_ansi(&format!("{name} {description}")));
+            self.bar.tick();
         } else {
-            self.bar.println(start_msg);
+            output::status(name, description);
         }
-
-        // 设置状态栏消息，进度数字放在对齐文字后面
-        let status_line = format!(
-            "{:>12} {} [{}/{}]",
-            name.green().bold(),
-            description,
-            state.current,
-            state.total
-        );
-
-        if std::env::var("NO_COLOR").is_ok() {
-            self.bar
-                .set_message(anstream::adapter::strip_str(&status_line).to_string());
-        } else {
-            self.bar.set_message(status_line);
-        }
-        self.bar.set_position(state.current as u64);
     }
 
-    /// 完成并显示最终信息（清除进度条后打印，避免模板前缀干扰对齐）
     pub fn finish_with_message(&self, msg: &str) {
-        if !self.quiet {
-            self.bar.finish_and_clear();
-            println!("{}", msg);
+        if crate::output::is_quiet() {
+            return;
         }
+
+        if self.progress_enabled {
+            self.bar.finish_and_clear();
+        }
+        output::line(maybe_strip_ansi(msg));
     }
 }
 
-/// 任务 guard
+fn maybe_strip_ansi(content: &str) -> String {
+    if std::env::var("NO_COLOR").is_ok() {
+        anstream::adapter::strip_str(content).to_string()
+    } else {
+        content.to_string()
+    }
+}
+
 pub struct TaskGuard<'a> {
     _bar: &'a StatusBar,
 }

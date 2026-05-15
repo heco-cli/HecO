@@ -1,5 +1,5 @@
 use crate::config::{Config, ConfigFile, DevEcoConfig};
-use anstream::println;
+use crate::output;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use serde::Deserialize;
@@ -119,7 +119,9 @@ fn handle_add(path: &str, default: bool) -> Result<()> {
 
     let (api_version, version) = get_sdk_version(&root_path)?;
 
-    println!("Found API version: {}, Version: {}", api_version, version);
+    if !output::is_quiet() {
+        output::status("Detected", format!("API {api_version}, version {version}"));
+    }
 
     env_config.deveco_studios.insert(
         api_version.clone(),
@@ -131,7 +133,9 @@ fn handle_add(path: &str, default: bool) -> Result<()> {
 
     if default {
         env_config.default_deveco_studio = Some(root_path.clone());
-        println!("Set as default DevEco Studio.");
+        if !output::is_quiet() {
+            output::status("Setting", "default DevEco Studio");
+        }
     } else if env_config.default_deveco_studio.is_none() {
         // If it's the first one, optionally make it default automatically?
         // Let's keep it explicit as per user requirement, but it's good practice.
@@ -141,7 +145,7 @@ fn handle_add(path: &str, default: bool) -> Result<()> {
     config_file.env = Some(env_config);
     save_config_file(&config_file)?;
 
-    println!("Successfully added DevEco Studio path: {}", path);
+    output::stdout_line(format!("Added DevEco Studio path: {}", path));
     Ok(())
 }
 
@@ -163,22 +167,27 @@ fn handle_remove(target: &str) -> Result<()> {
     }
 
     if keys_to_remove.is_empty() {
-        println!("No matching configuration found for target: {}", target);
+        output::warning(format!(
+            "no matching configuration found for target: {}",
+            target
+        ));
         return Ok(());
     }
 
     for key in keys_to_remove {
         if let Some(removed) = env_config.deveco_studios.remove(&key) {
-            println!(
+            output::stdout_line(format!(
                 "Removed configuration: API version {}, path {:?}",
                 key, removed.path
-            );
+            ));
 
             if let Some(default_path) = &env_config.default_deveco_studio
                 && default_path == &removed.path
             {
                 env_config.default_deveco_studio = None;
-                println!("Removed from default DevEco Studio path as well.");
+                if !output::is_quiet() {
+                    output::status("Removed", "from default DevEco Studio path");
+                }
             }
         }
     }
@@ -228,18 +237,18 @@ fn handle_list() -> Result<()> {
                 .map(|(api, v)| format!("{}({})", v, api))
                 .unwrap_or_else(|_| "unknown".to_string());
 
-            println!(
+            output::stdout_line(format!(
                 "* {}{} [{}] {}",
                 sdk_version.cyan(),
                 app_version,
                 "auto".yellow(),
                 resolved.display().to_string().dimmed()
-            );
+            ));
         } else {
-            println!(
+            output::stdout_line(format!(
                 "  {}",
                 "No DevEco Studio versions configured or detected.".dimmed()
-            );
+            ));
         }
         return Ok(());
     }
@@ -282,14 +291,14 @@ fn handle_list() -> Result<()> {
             "".to_string()
         };
 
-        println!(
+        output::stdout_line(format!(
             "{} {}{}{} {}",
             marker,
             sdk_version_str,
             app_version,
             tag_str,
             dev_config.path.display().to_string().dimmed()
-        );
+        ));
     }
 
     let is_resolved_in_list = if let Some(ref r) = resolved_path {
@@ -307,13 +316,13 @@ fn handle_list() -> Result<()> {
                 .map(|(api, v)| format!("{}({})", v, api))
                 .unwrap_or_else(|_| "unknown".to_string());
 
-            println!(
+            output::stdout_line(format!(
                 "* {}{} [{}] {}",
                 sdk_version.cyan(),
                 app_version,
                 "auto".yellow(),
                 resolved.display().to_string().dimmed()
-            );
+            ));
         }
     } else {
         // If the resolved path is in the list, we might still want to show the auto-detected path
@@ -337,13 +346,13 @@ fn handle_list() -> Result<()> {
                     .map(|(api, v)| format!("{}({})", v, api))
                     .unwrap_or_else(|_| "unknown".to_string());
 
-                println!(
+                output::stdout_line(format!(
                     "  {}{} [{}] {}",
                     sdk_version.cyan(),
                     app_version,
                     "auto".yellow(),
                     auto_detected.display().to_string().dimmed()
-                );
+                ));
             }
         }
     }
@@ -359,6 +368,6 @@ pub fn handle_env(args: EnvArgs) {
     };
 
     if let Err(e) = result {
-        println!("Error: {}", e);
+        output::error(e);
     }
 }

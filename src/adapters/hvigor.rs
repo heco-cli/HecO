@@ -1,78 +1,71 @@
+use crate::adapters::output_parser::{LogType, parse_log_type};
 use crate::build::BuildArgs;
 use crate::clean::CleanArgs;
-use crate::command::CommandRunner;
+use crate::command::{CommandOutputEvent, CommandRunner};
 use crate::config::Config;
+use crate::output;
 use crate::progress::StatusBar;
 use crate::project::{ModuleType, load_project};
-use anstream::println;
 use owo_colors::OwoColorize;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum LogType {
-    Warning,
-    Error,
-}
-
-// 预定义日志前缀映射
-static LOG_PREFIX_MAP: LazyLock<HashMap<LogType, Vec<&'static str>>> = LazyLock::new(|| {
-    let mut m = HashMap::new();
-    m.insert(
+const HVIGOR_LOG_PREFIXES: &[(LogType, &[&str])] = &[
+    (
         LogType::Warning,
-        // 注意顺序：将最长的前缀放在最前面，防止短前缀（如 "warning:"）提前被匹配
-        vec![
+        &[
             "WARN: WARN: ArkTS:WARN File:",
             "WARN: ArkTS:WARN File:",
             "WARN: ArkTS:WARN",
             "ArkTS:WARN File:",
+            "Warning:",
             "WARN:",
             "ArkTS:WARN",
         ],
-    );
-    m.insert(LogType::Error, vec!["ERROR: ArkTS:ERROR", "ERROR:"]);
-    m
-});
+    ),
+    (LogType::Error, &["ERROR: ArkTS:ERROR", "ERROR:"]),
+];
 
-/// 识别行是否匹配指定的日志类型，如果匹配则返回 (LogType, 剥离前缀后的内容)
-fn parse_log_type(line: &str) -> Option<(LogType, String)> {
-    let line_trim = line.trim();
-    for (log_type, prefixes) in LOG_PREFIX_MAP.iter() {
-        for prefix in prefixes {
-            if line_trim.starts_with(prefix) {
-                // 如果找到匹配，截取掉前缀并返回
-                let content = line_trim.strip_prefix(prefix).unwrap().trim().to_string();
-                return Some((*log_type, content));
-            }
-        }
-    }
-    None
-}
+const HVIGOR_SKIPPED_PREFIXES: &[&str] = &["BUILD SUCCESSFUL"];
+const HVIGOR_TRIMMED_PREFIXES: &[&str] = &["Finished ", "UP-TO-DATE "];
+const HVIGOR_WARNING_TRIMMED_PREFIXES: &[&str] = &["Warning:"];
 
-/// 运行命令并处理日志块
 fn run_command_with_log_handling(
     runner: &CommandRunner,
     node_path_str: &str,
     program_args: &[&str],
-    width: usize,
+    verb: &str,
     bar: Option<&StatusBar>,
 ) -> anyhow::Result<()> {
-    // 追踪连续行的状态
     let mut last_log_type: Option<LogType> = None;
-    let mut first_line = true;
 
-    runner.run_with_handler(node_path_str, program_args, |line| {
-        // 立即处理这一行
-        let mut processed_line = anstream::adapter::strip_str(line).to_string();
+    runner.run_with_events(node_path_str, program_args, |event| {
+        let raw_line = match event {
+            CommandOutputEvent::Line(line) | CommandOutputEvent::Overwrite(line) => line,
+        };
 
+        if crate::output::verbose_level() >= 2 {
+            let cleaned = anstream::adapter::strip_str(&raw_line)
+                .to_string()
+                .replace(['\r', '\n'], "");
+            let trimmed = cleaned.trim();
+            if !trimmed.is_empty() {
+                crate::output::line(trimmed);
+            }
+            return;
+        }
+
+        if bar.is_none() {
+            return;
+        }
+
+        let line = raw_line;
+
+        let mut processed_line = anstream::adapter::strip_str(&line).to_string();
         if processed_line.trim().is_empty() {
             return;
         }
 
-        // 如果是新块开头，重置为非延续状态，并去掉 "> hvigor " 前缀
         let is_block_header = processed_line.trim().starts_with("> hvigor ");
-
         if is_block_header {
             processed_line = processed_line
                 .trim_start_matches("> hvigor ")
@@ -81,57 +74,98 @@ fn run_command_with_log_handling(
             last_log_type = None;
         }
 
-        // 尝试解析为警告/错误
-        if let Some((log_type, content)) = parse_log_type(&processed_line) {
+        if should_skip_line(&processed_line) {
+            return;
+        }
+
+        if let Some((log_type, content)) =
+            parse_log_type(processed_line.trim(), HVIGOR_LOG_PREFIXES)
+        {
             last_log_type = Some(log_type);
             let output = match log_type {
-                LogType::Warning => format!("{}: {}", "warning".yellow().bold(), content),
-                LogType::Error => format!("{}: {}", "error".red().bold(), content),
+                LogType::Warning => format_warning(&content),
+                LogType::Error => format_error(&content),
             };
-            if let Some(b) = bar {
-                b.println(&output);
-            } else {
-                println!("{}", output);
-            }
+            emit_plain_line(bar, &output);
+        } else if should_continue_log_block(&processed_line, last_log_type) {
+            emit_plain_line(bar, processed_line.trim());
         } else {
-            // 检查是否是延续行（以空白开头且上一行是警告/错误）
-            if line.starts_with(char::is_whitespace)
-                && let Some(_log_type) = last_log_type
-            {
-                // 延续，直接打印原始内容
-                if let Some(b) = bar {
-                    b.println(&processed_line);
-                } else {
-                    println!("{}", processed_line);
-                }
-            } else {
-                // 普通行，重置延续状态
-                last_log_type = None;
-
-                let output = if is_block_header || first_line {
-                    // 块的第一行，添加 hvigor 前缀
-                    first_line = false;
-                    format!(
-                        "{:>width$} {}",
-                        "hvigor".green().bold(),
-                        processed_line,
-                        width = width
-                    )
-                } else {
-                    // 普通延续行
-                    processed_line.clone()
-                };
-
-                if let Some(b) = bar {
-                    b.println(&output);
-                } else {
-                    println!("{}", output);
-                }
-            }
+            last_log_type = None;
+            let processed_line = normalize_content_line(&processed_line);
+            emit_status_line(bar, verb, &processed_line);
         }
     })?;
 
     Ok(())
+}
+
+fn emit_plain_line(bar: Option<&StatusBar>, content: &str) {
+    if let Some(bar) = bar {
+        bar.println(content);
+    } else {
+        output::line(content);
+    }
+}
+
+fn emit_status_line(bar: Option<&StatusBar>, verb: &str, content: &str) {
+    if let Some(bar) = bar {
+        bar.status(verb, content);
+    } else {
+        output::status(verb, content);
+    }
+}
+
+fn should_skip_line(content: &str) -> bool {
+    starts_with_any(content, HVIGOR_SKIPPED_PREFIXES)
+}
+
+fn should_continue_log_block(content: &str, last_log_type: Option<LogType>) -> bool {
+    if last_log_type.is_none() {
+        return false;
+    }
+
+    let trimmed = content.trim();
+    !trimmed.is_empty() && !looks_like_hvigor_status_line(trimmed)
+}
+
+fn normalize_content_line(content: &str) -> String {
+    trim_known_prefix_from_set(content, HVIGOR_TRIMMED_PREFIXES)
+        .unwrap_or(content)
+        .trim()
+        .to_string()
+}
+
+fn normalize_warning_content(content: &str) -> String {
+    trim_known_prefix_from_set(content.trim(), HVIGOR_WARNING_TRIMMED_PREFIXES)
+        .unwrap_or(content)
+        .trim()
+        .to_string()
+}
+
+fn trim_known_prefix_from_set<'a>(content: &'a str, prefixes: &[&str]) -> Option<&'a str> {
+    prefixes
+        .iter()
+        .find_map(|prefix| content.strip_prefix(prefix))
+}
+
+fn starts_with_any(content: &str, prefixes: &[&str]) -> bool {
+    prefixes.iter().any(|prefix| content.starts_with(prefix))
+}
+
+fn looks_like_hvigor_status_line(content: &str) -> bool {
+    starts_with_any(content, HVIGOR_TRIMMED_PREFIXES) || content.starts_with(':')
+}
+
+fn format_warning(content: &str) -> String {
+    format!(
+        "{}: {}",
+        "warning".yellow().bold(),
+        normalize_warning_content(content)
+    )
+}
+
+fn format_error(content: &str) -> String {
+    format!("{}: {}", "error".red().bold(), content)
 }
 
 impl BuildArgs {
@@ -216,7 +250,6 @@ pub fn sync(
     project_root: &Path,
     config: &Config,
     quiet: bool,
-    width: usize,
     bar: Option<&StatusBar>,
 ) -> anyhow::Result<()> {
     let node_path = config
@@ -270,23 +303,19 @@ pub fn sync(
 
     let node_path_str = node_path.to_str().unwrap_or("node");
 
-    if quiet {
-        let output = runner.run_captured_merged(node_path_str, &program_args)?;
-        if !output.status.success() {
-            print!("{}", String::from_utf8_lossy(&output.stdout));
-            anyhow::bail!("{}", "error: hvigor sync failed".red());
-        }
-        Ok(())
-    } else {
-        run_command_with_log_handling(&runner, node_path_str, &program_args, width, bar)
-    }
+    run_command_with_log_handling(
+        &runner,
+        node_path_str,
+        &program_args,
+        "Syncing",
+        if quiet { None } else { bar },
+    )
 }
 
 pub fn build(
     args: &BuildArgs,
     project_root: &PathBuf,
     config: &Config,
-    width: usize,
     bar: Option<&StatusBar>,
 ) -> anyhow::Result<()> {
     let node_path = config
@@ -323,16 +352,13 @@ pub fn build(
 
     let node_path_str = node_path.to_str().unwrap_or("node");
 
-    if args.quiet {
-        let output = runner.run_captured_merged(node_path_str, &program_args)?;
-        if !output.status.success() {
-            print!("{}", String::from_utf8_lossy(&output.stdout));
-            anyhow::bail!("{}", "error: build failed".red());
-        }
-        Ok(())
-    } else {
-        run_command_with_log_handling(&runner, node_path_str, &program_args, width, bar)
-    }
+    run_command_with_log_handling(
+        &runner,
+        node_path_str,
+        &program_args,
+        "Compiling",
+        if args.quiet { None } else { bar },
+    )
 }
 
 fn resolve_tasks(
@@ -405,7 +431,6 @@ pub fn clean(
     args: &CleanArgs,
     project_root: &Path,
     config: &Config,
-    width: usize,
     bar: Option<&StatusBar>,
 ) -> anyhow::Result<()> {
     let node_path = config
@@ -435,14 +460,92 @@ pub fn clean(
 
     let node_path_str = node_path.to_str().unwrap_or("node");
 
-    if args.quiet {
-        let output = runner.run_captured_merged(node_path_str, &program_args)?;
-        if !output.status.success() {
-            print!("{}", String::from_utf8_lossy(&output.stdout));
-            anyhow::bail!("{}", "error: clean failed".red());
-        }
-        Ok(())
-    } else {
-        run_command_with_log_handling(&runner, node_path_str, &program_args, width, bar)
+    run_command_with_log_handling(
+        &runner,
+        node_path_str,
+        &program_args,
+        "Cleaning",
+        if args.quiet { None } else { bar },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        format_warning, looks_like_hvigor_status_line, normalize_content_line,
+        normalize_warning_content, should_continue_log_block, should_skip_line,
+    };
+    use crate::adapters::output_parser::LogType;
+
+    #[test]
+    fn skips_success_summary_lines() {
+        assert!(should_skip_line("BUILD SUCCESSFUL in 889 ms"));
+        assert!(!should_skip_line("BUILD FAILED in 889 ms"));
+    }
+
+    #[test]
+    fn trims_finished_prefix() {
+        assert_eq!(
+            normalize_content_line("Finished :entry:default@BuildJS... after 1 ms"),
+            ":entry:default@BuildJS... after 1 ms"
+        );
+    }
+
+    #[test]
+    fn trims_up_to_date_prefix() {
+        assert_eq!(
+            normalize_content_line("UP-TO-DATE :entry:default@PreBuild..."),
+            ":entry:default@PreBuild..."
+        );
+    }
+
+    #[test]
+    fn continues_warning_detail_without_indent() {
+        assert!(should_continue_log_block(
+            "at /tmp/sample/resources/base/element/float.json",
+            Some(LogType::Warning)
+        ));
+        assert!(should_continue_log_block(
+            "but declared again.",
+            Some(LogType::Warning)
+        ));
+    }
+
+    #[test]
+    fn continues_unless_line_is_known_status() {
+        // Caller is responsible for filtering log-type-prefixed lines before this function.
+        assert!(should_continue_log_block(
+            "Warning: 'card_content_height' conflict, first declared.",
+            Some(LogType::Warning)
+        ));
+    }
+
+    #[test]
+    fn does_not_continue_known_hvigor_status_lines() {
+        assert!(looks_like_hvigor_status_line(
+            "Finished :phone:default@CompileResource..."
+        ));
+        assert!(looks_like_hvigor_status_line(
+            ":phone:default@CompileArkTS... after 12 s"
+        ));
+        assert!(!should_continue_log_block(
+            "Finished :phone:default@CompileResource... after 468 ms",
+            Some(LogType::Warning)
+        ));
+    }
+
+    #[test]
+    fn strips_redundant_warning_prefix_from_content() {
+        assert_eq!(
+            normalize_warning_content("Warning: 'card_content_height' conflict, first declared."),
+            "'card_content_height' conflict, first declared."
+        );
+        assert_eq!(
+            anstream::adapter::strip_str(&format_warning(
+                "Warning: 'card_content_height' conflict, first declared."
+            ))
+            .to_string(),
+            "warning: 'card_content_height' conflict, first declared."
+        );
     }
 }

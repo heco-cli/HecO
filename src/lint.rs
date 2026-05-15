@@ -1,11 +1,12 @@
-use crate::command::CommandRunner;
+use crate::adapters::output_parser::{LogType, parse_log_type};
+use crate::command::{CommandOutputEvent, CommandRunner};
 use crate::config::Config;
+use crate::output;
+use crate::progress::StatusBar;
 use crate::project::{find_project_root, load_project};
-use anstream::println;
 use anyhow::{Context, Result};
 use clap::Parser;
-use owo_colors::OwoColorize;
-use std::io::Write;
+use clap_complete::engine::ArgValueCompleter;
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -15,12 +16,16 @@ pub struct LintArgs {
     #[arg(long)]
     pub fix: bool,
     /// Specify one or more product names, separated by commas
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, value_delimiter = ',', add = ArgValueCompleter::new(crate::completion::complete_products))]
     pub products: Option<Vec<String>>,
-    /// Quiet mode, reduce output
-    #[arg(short, long)]
+    #[arg(skip)]
     pub quiet: bool,
 }
+
+const LINT_LOG_PREFIXES: &[(LogType, &[&str])] = &[
+    (LogType::Warning, &["warning:", "Warning:", "WARN:"]),
+    (LogType::Error, &["error:", "Error:", "ERROR:"]),
+];
 
 fn run_codelinter(
     project_root: &std::path::Path,
@@ -29,6 +34,7 @@ fn run_codelinter(
     fix: bool,
     product: Option<&str>,
     quiet: bool,
+    bar: Option<&StatusBar>,
 ) -> Result<()> {
     let node_path = config.node_path().context(
         "Node runtime not found. Please check DevEco Studio installation path configuration.",
@@ -66,74 +72,137 @@ fn run_codelinter(
     let node_path_str = node_path.to_str().unwrap_or("node");
     let runner = CommandRunner::new(project_root.to_path_buf());
 
-    if quiet {
-        let output = runner.run_captured_merged(node_path_str, &cmd_args_ref)?;
-        if !output.status.success() {
-            print!("{}", String::from_utf8_lossy(&output.stdout));
-            anyhow::bail!("error: lint failed");
-        }
-        Ok(())
-    } else {
-        // 捕获并处理输出，特别是进度条
-        runner.run_with_handler(node_path_str, &cmd_args_ref, |line| {
-            // 清理 ANSI 转义序列和特殊字符（参考 hvigor.rs 的实现）
-            let mut cleaned_line = line.to_string();
-            // 处理常见的颜色控制序列
-            cleaned_line = cleaned_line.replace("\x1b[0m", "");
-            cleaned_line = cleaned_line.replace("\x1b[30m", "");
-            cleaned_line = cleaned_line.replace("\x1b[31m", "");
-            cleaned_line = cleaned_line.replace("\x1b[32m", "");
-            cleaned_line = cleaned_line.replace("\x1b[33m", "");
-            cleaned_line = cleaned_line.replace("\x1b[34m", "");
-            cleaned_line = cleaned_line.replace("\x1b[35m", "");
-            cleaned_line = cleaned_line.replace("\x1b[36m", "");
-            cleaned_line = cleaned_line.replace("\x1b[37m", "");
-            cleaned_line = cleaned_line.replace("\x1b[1m", "");
-            cleaned_line = cleaned_line.replace("\x1b[4m", "");
-            // 移除回车符和换行符
-            cleaned_line = cleaned_line.replace(['\r', '\n'], "");
+    let mut last_log_type: Option<LogType> = None;
 
-            // 检查是否是进度条行（包含 Working...[ 或 Finished...[）
-            if cleaned_line.contains("Working...[") || cleaned_line.contains("Finished...[") {
-                // 提取所有数字，过滤掉颜色代码相关的数字（30-37 是颜色代码，0 是重置）
-                let numbers: Vec<u32> = cleaned_line
-                    .split(|c: char| !c.is_ascii_digit())
-                    .filter(|s| !s.is_empty())
-                    .filter_map(|s| s.parse().ok())
-                    .filter(|&n| n <= 100 && n != 0 && !(30..=37).contains(&n))
-                    .collect();
+    runner.run_with_events(node_path_str, &cmd_args_ref, |event| {
+        let raw_line = match event {
+            CommandOutputEvent::Line(line) | CommandOutputEvent::Overwrite(line) => line,
+        };
 
-                // 取最后一个数字作为百分比
-                if let Some(percent) = numbers.last().copied() {
-                    // 清除当前行并显示新的进度条
-                    print!("\r");
-                    // 使用足够的空格清除之前的内容
-                    print!("{:width$}", "", width = 100);
-                    print!("\r");
-                    let bar_width = 50; // 使用更宽的进度条
-                    // 安全计算，确保不会溢出
-                    let filled = (bar_width as u32 * percent) / 100;
-                    let bar = "=".repeat(filled as usize)
-                        + &" ".repeat((bar_width as u32 - filled) as usize);
-                    // 确保输出完整的进度条
-                    let progress_str =
-                        format!("{:>9} [{}] {}/100 ", "Linting".green().bold(), bar, percent);
-                    print!("{}", progress_str);
-                    std::io::stdout().flush().unwrap();
-                    // 如果是100%，换行
-                    if percent == 100 {
-                        println!();
-                    }
-                }
-            } else if !line.trim().is_empty() {
-                // 其他非空白行直接打印，保持右对齐格式
-                // 先确保进度条行已经结束
-                print!("\r");
-                print!("{:width$}", "", width = 100);
-                print!("\r");
-                println!("{:>9} {}", "Linter".green().bold(), line);
+        if crate::output::verbose_level() >= 2 {
+            let cleaned = sanitize_lint_line(&raw_line);
+            if !cleaned.is_empty() {
+                crate::output::line(&cleaned);
             }
-        })
+            return;
+        }
+
+        if quiet {
+            return;
+        }
+
+        let cleaned_line = sanitize_lint_line(&raw_line);
+        if cleaned_line.is_empty() {
+            return;
+        }
+
+        if let Some((percent, message)) = parse_lint_progress(&cleaned_line) {
+            if !quiet && let Some(bar) = bar {
+                bar.set_progress(percent, &message);
+            }
+            return;
+        }
+
+        if let Some((verb, description)) = parse_lint_status_line(&cleaned_line) {
+            emit_status_line(bar, verb, &description);
+            return;
+        }
+
+        if is_lint_info_line(&cleaned_line) {
+            return;
+        }
+
+        if let Some((log_type, content)) = parse_log_type(&cleaned_line, LINT_LOG_PREFIXES) {
+            last_log_type = Some(log_type);
+            let formatted = match log_type {
+                LogType::Warning => format!("warning: {}", content),
+                LogType::Error => format!("error: {}", content),
+            };
+            emit_result_line(&formatted);
+            return;
+        }
+
+        if raw_line.starts_with(char::is_whitespace) && last_log_type.is_some() {
+            emit_result_line(&cleaned_line);
+        } else {
+            last_log_type = None;
+            emit_result_line(&cleaned_line);
+        }
+    })
+}
+
+fn sanitize_lint_line(line: &str) -> String {
+    anstream::adapter::strip_str(line)
+        .to_string()
+        .replace(['\r', '\n'], "")
+        .trim()
+        .to_string()
+}
+
+fn parse_lint_progress(line: &str) -> Option<(usize, String)> {
+    let trimmed = line.trim();
+    let start = trimmed.find('[')?;
+    let bar_end = trimmed[start + 1..].find(']')? + start + 1;
+    let percent_text = trimmed[bar_end + 1..].trim();
+    let percent = percent_text
+        .strip_suffix('%')?
+        .trim()
+        .parse::<usize>()
+        .ok()?;
+
+    let prefix = trimmed[..start].trim();
+    if !prefix.starts_with("Working...")
+        && !prefix.starts_with("Finished...")
+        && !prefix.starts_with("Checking...")
+    {
+        return None;
+    }
+
+    let message = if prefix.starts_with("Finished...") {
+        "lint finished".to_string()
+    } else {
+        "running lint checks".to_string()
+    };
+
+    Some((percent.min(100), message))
+}
+
+fn is_lint_info_line(line: &str) -> bool {
+    line == "No defects found in your code."
+}
+
+fn parse_lint_status_line(line: &str) -> Option<(&'static str, String)> {
+    let trimmed = line.trim();
+
+    if let Some(product) = trimmed.strip_prefix("Currently active product:") {
+        let product = product.trim();
+        if !product.is_empty() {
+            return Some(("Using", format!("product {}", product)));
+        }
+    }
+
+    if let Some(path) = parse_lint_config_path(trimmed) {
+        return Some(("Using", format!("config {}", path)));
+    }
+
+    None
+}
+
+fn parse_lint_config_path(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("The configuration file ")?;
+    let path = rest.strip_suffix(" in the project is in use.")?;
+    Some(path.trim())
+}
+
+fn emit_result_line(content: &str) {
+    output::line(content);
+}
+
+fn emit_status_line(bar: Option<&StatusBar>, verb: &str, description: &str) {
+    if let Some(bar) = bar {
+        bar.status(verb, description);
+    } else {
+        output::status(verb, description);
     }
 }
 
@@ -161,17 +230,15 @@ pub fn handle_lint(args: LintArgs) -> Result<()> {
     let start = Instant::now();
 
     if let Some(ref products) = args.products {
-        if !args.quiet {
-            println!(
-                "{:>9} {} ({})",
-                "Linting".green().bold(),
-                products.join(", "),
-                project_root.display()
-            );
-        }
-
         for product in products {
             project.validate_product(product)?;
+            if !args.quiet {
+                output::status(
+                    "Checking",
+                    format!("{} ({})", product, project_root.display()),
+                );
+            }
+            let lint_bar = StatusBar::new("Checking", 100);
             run_codelinter(
                 &project_root,
                 &config,
@@ -179,24 +246,20 @@ pub fn handle_lint(args: LintArgs) -> Result<()> {
                 args.fix,
                 Some(product),
                 args.quiet,
+                if args.quiet { None } else { Some(&lint_bar) },
             )?;
+            lint_bar.finish_and_clear();
         }
 
         if !args.quiet {
-            println!(
-                "\n{:>9} in {:.2?}",
-                "Finished".green().bold(),
-                start.elapsed()
-            );
+            output::finished("", start.elapsed());
         }
     } else {
         if !args.quiet {
-            println!(
-                "{:>9} ({})",
-                "Linting".green().bold(),
-                project_root.display()
-            );
+            output::status("Checking", project_root.display());
         }
+
+        let lint_bar = StatusBar::new("Checking", 100);
 
         run_codelinter(
             &project_root,
@@ -205,16 +268,46 @@ pub fn handle_lint(args: LintArgs) -> Result<()> {
             args.fix,
             None,
             args.quiet,
+            if args.quiet { None } else { Some(&lint_bar) },
         )?;
 
+        lint_bar.finish_and_clear();
+
         if !args.quiet {
-            println!(
-                "{:>9} in {:.2?}",
-                "Finished".green().bold(),
-                start.elapsed()
-            );
+            output::finished("", start.elapsed());
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_lint_status_line;
+
+    #[test]
+    fn parses_active_product_line_as_status() {
+        assert_eq!(
+            parse_lint_status_line("Currently active product: default"),
+            Some(("Using", "product default".to_string()))
+        );
+    }
+
+    #[test]
+    fn parses_config_file_line_as_status() {
+        assert_eq!(
+            parse_lint_status_line(
+                "The configuration file /path/to/code-linter.json5 in the project is in use."
+            ),
+            Some(("Using", "config /path/to/code-linter.json5".to_string()))
+        );
+    }
+
+    #[test]
+    fn ignores_unrelated_status_lines() {
+        assert_eq!(
+            parse_lint_status_line("CodeLinter found some defects in your code."),
+            None
+        );
+    }
 }

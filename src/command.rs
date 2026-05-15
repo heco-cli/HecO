@@ -3,6 +3,12 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandOutputEvent {
+    Line(String),
+    Overwrite(String),
+}
+
 pub struct CommandRunner {
     working_dir: PathBuf,
     env: std::collections::HashMap<String, String>,
@@ -21,15 +27,19 @@ impl CommandRunner {
         self
     }
 
-    pub fn run_with_handler<F>(
+    pub fn run_with_events<F>(
         &self,
         program: &str,
         args: &[&str],
         mut handler: F,
     ) -> anyhow::Result<()>
     where
-        F: FnMut(&str),
+        F: FnMut(CommandOutputEvent),
     {
+        if crate::output::verbose_level() >= 1 {
+            crate::output::line(format!("Running `{} {}`", program, args.join(" ")));
+        }
+
         let (reader, writer) = os_pipe::pipe()?;
 
         let mut cmd = Command::new(program);
@@ -54,41 +64,15 @@ impl CommandRunner {
         let mut line = String::new();
 
         loop {
-            let mut buf = [0; 1024]; // 使用更大的缓冲区
+            let mut buf = [0; 1024];
             match reader.read(&mut buf) {
                 Ok(0) => {
-                    // 管道关闭，处理剩余内容
-                    if !line.is_empty() {
-                        handler(&line);
-                    }
+                    flush_buffer(&mut line, false, &mut handler);
                     break;
                 }
                 Ok(n) => {
-                    // 尝试将字节解码为UTF-8字符串
                     if let Ok(s) = std::str::from_utf8(&buf[..n]) {
-                        // 处理解码后的字符串
-                        for c in s.chars() {
-                            match c {
-                                '\n' => {
-                                    // 换行符，处理完整行
-                                    if !line.is_empty() {
-                                        handler(&line);
-                                        line.clear();
-                                    }
-                                }
-                                '\r' => {
-                                    // 回车符，处理当前行（通常是进度条更新）
-                                    if !line.is_empty() {
-                                        handler(&line);
-                                        line.clear();
-                                    }
-                                }
-                                _ => {
-                                    // 普通字符，添加到当前行
-                                    line.push(c);
-                                }
-                            }
-                        }
+                        dispatch_output_chunk(s, &mut line, &mut handler);
                     }
                 }
                 Err(_) => break,
@@ -99,18 +83,10 @@ impl CommandRunner {
         let status = child.wait()?;
 
         if !status.success() {
-            anyhow::bail!("命令执行失败: {} {}", program, args.join(" "));
+            anyhow::bail!("command failed: {} {}", program, args.join(" "));
         }
 
         Ok(())
-    }
-
-    pub fn run_captured_merged(
-        &self,
-        program: &str,
-        args: &[&str],
-    ) -> anyhow::Result<std::process::Output> {
-        self.run_captured_merged_with_timeout(program, args, None)
     }
 
     pub fn run_captured_merged_with_timeout(
@@ -190,5 +166,72 @@ impl CommandRunner {
             stdout: output,
             stderr: Vec::new(),
         })
+    }
+}
+
+fn dispatch_output_chunk<F>(chunk: &str, line_buffer: &mut String, handler: &mut F)
+where
+    F: FnMut(CommandOutputEvent),
+{
+    for c in chunk.chars() {
+        match c {
+            '\n' => flush_buffer(line_buffer, false, handler),
+            '\r' => flush_buffer(line_buffer, true, handler),
+            _ => line_buffer.push(c),
+        }
+    }
+}
+
+fn flush_buffer<F>(line_buffer: &mut String, overwrite: bool, handler: &mut F)
+where
+    F: FnMut(CommandOutputEvent),
+{
+    if line_buffer.is_empty() {
+        return;
+    }
+
+    let content = std::mem::take(line_buffer);
+    let event = if overwrite {
+        CommandOutputEvent::Overwrite(content)
+    } else {
+        CommandOutputEvent::Line(content)
+    };
+    handler(event);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CommandOutputEvent, dispatch_output_chunk, flush_buffer};
+
+    #[test]
+    fn splits_line_and_overwrite_events() {
+        let mut buffer = String::new();
+        let mut events = Vec::new();
+
+        dispatch_output_chunk("Working...[12%]\rDone line\n", &mut buffer, &mut |event| {
+            events.push(event);
+        });
+
+        assert_eq!(
+            events,
+            vec![
+                CommandOutputEvent::Overwrite("Working...[12%]".to_string()),
+                CommandOutputEvent::Line("Done line".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn flushes_remaining_content_as_line() {
+        let mut buffer = String::new();
+        let mut events = Vec::new();
+
+        dispatch_output_chunk("tail output", &mut buffer, &mut |event| events.push(event));
+        flush_buffer(&mut buffer, false, &mut |event| events.push(event));
+
+        assert_eq!(
+            events,
+            vec![CommandOutputEvent::Line("tail output".to_string())]
+        );
     }
 }

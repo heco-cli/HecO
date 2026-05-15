@@ -10,6 +10,7 @@ mod device;
 mod emulator;
 mod env;
 mod lint;
+mod output;
 mod progress;
 mod project;
 mod run;
@@ -48,7 +49,6 @@ const BANNER: &str = "\
 #[command(
     name = "HecO", 
     bin_name = "heco",
-    before_help = BANNER,
     about = "The HarmonyOS app development CLI tool built for you and AI agents.",
     version,
     author,
@@ -59,6 +59,14 @@ struct Cli {
     /// Controls when to use color.
     #[arg(long, global = true, value_enum, default_value_t = ColorChoice::Auto)]
     color: ColorChoice,
+
+    /// Reduce non-essential output across commands.
+    #[arg(short, long, global = true)]
+    quiet: bool,
+
+    /// Increase output verbosity (can be repeated: -v, -vv).
+    #[arg(short, long, global = true, action = clap::ArgAction::Count)]
+    verbose: u8,
 
     #[command(subcommand)]
     command: Commands,
@@ -100,9 +108,27 @@ enum Commands {
 fn main() -> anyhow::Result<()> {
     use clap::CommandFactory;
     use clap_complete::env::CompleteEnv;
+    use std::io::IsTerminal;
     CompleteEnv::with_factory(Cli::command).complete();
 
+    let args: Vec<String> = std::env::args().collect();
+    let cmd = Cli::command();
+    let subcommand_names: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+    let has_help = args.iter().any(|a| a == "--help" || a == "-h");
+    let has_subcommand = args.iter().any(|a| subcommand_names.contains(&a.as_str()));
+    if has_help && !has_subcommand && std::io::stderr().is_terminal() {
+        eprintln!("{}", BANNER);
+    }
+
     let cli = Cli::parse();
+
+    if cli.quiet {
+        output::set_quiet(true);
+    }
+
+    if cli.verbose > 0 {
+        output::set_verbose(cli.verbose);
+    }
 
     match cli.color {
         ColorChoice::Always => {
@@ -136,16 +162,19 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
-        Commands::Build(args) => {
-            handle_build(args);
+        Commands::Build(mut args) => {
+            args.quiet = cli.quiet;
+            handle_build(args)?;
         }
-        Commands::Clean(args) => {
-            handle_clean(args);
+        Commands::Clean(mut args) => {
+            args.quiet = cli.quiet;
+            handle_clean(args)?;
         }
         Commands::Env(args) => {
             handle_env(args);
         }
-        Commands::Lint(args) => {
+        Commands::Lint(mut args) => {
+            args.quiet = cli.quiet;
             handle_lint(args)?;
         }
         Commands::Emulator(args) => {
@@ -172,9 +201,10 @@ fn main() -> anyhow::Result<()> {
     if !is_internal_check
         && !is_update
         && !is_completion
+        && !cli.quiet
         && let Some(latest) = crate::updater::get_cached_update()
     {
-        println!(
+        crate::output::line(format!(
             "\n{}",
             console::style(format!(
                 "🌟 A new version is available ({} -> {}). Run `heco update` to update.",
@@ -182,7 +212,7 @@ fn main() -> anyhow::Result<()> {
                 latest
             ))
             .yellow()
-        );
+        ));
     }
 
     Ok(())
